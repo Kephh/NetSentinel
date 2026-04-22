@@ -1,0 +1,21 @@
+filebeat.inputs:
+  - type: filestream
+    id: netsentinel-audit
+    enabled: true
+    paths:
+      - /var/log/netsentinel/audit.log
+    parsers:
+      - ndjson:
+          overwrite_keys: true
+          add_error_key: true
+
+processors:
+  - add_fields:
+      target: service
+      fields:
+        name: netsentinel
+        type: traffic-orchestrator
+
+output.logstash:
+  hosts:
+    - logstash:5044

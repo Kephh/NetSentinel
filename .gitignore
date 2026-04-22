@@ -1,0 +1,6 @@
+target/
+.mvn/apache-maven-*/
+.mvn/apache-maven-*-bin.zip
+*.log
+*.pid
+logs/

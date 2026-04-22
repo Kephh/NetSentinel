@@ -1,0 +1,81 @@
+name: NetSentinel Performance Gate
+
+on:
+  pull_request:
+    paths:
+      - src/**
+      - config/**
+      - scripts/**
+      - pom.xml
+      - .github/workflows/performance-gate.yml
+  workflow_dispatch:
+
+jobs:
+  latency-overhead:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Install wrk
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wrk
+
+      - name: Build artifact
+        run: ./mvnw -q -DskipTests package
+
+      - name: Start direct backend
+        run: |
+          python3 -m http.server 9001 > backend.log 2>&1 &
+          echo $! > backend.pid
+
+      - name: Start NetSentinel
+        run: |
+          java -jar target/netsentinel-0.1.0.jar config/netsentinel-benchmark.json > netsentinel.log 2>&1 &
+          echo $! > netsentinel.pid
+
+      - name: Wait for metrics endpoint
+        run: |
+          for _ in {1..40}; do
+            if curl -fsS http://127.0.0.1:9090/metrics > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "NetSentinel failed to become ready"
+          cat netsentinel.log || true
+          exit 1
+
+      - name: Benchmark latency overhead
+        env:
+          PROXY_URL: http://127.0.0.1:8080/
+          DIRECT_URL: http://127.0.0.1:9001/
+          THREADS: "8"
+          CONNECTIONS: "2000"
+          DURATION: "20s"
+          TARGET_OVERHEAD_MS: "2.0"
+        run: bash scripts/benchmark.sh
+
+      - name: Dump logs on failure
+        if: failure()
+        run: |
+          echo "=== NetSentinel log ==="
+          cat netsentinel.log || true
+          echo "=== Backend log ==="
+          cat backend.log || true
+
+      - name: Stop background services
+        if: always()
+        run: |
+          test -f netsentinel.pid && kill "$(cat netsentinel.pid)" || true
+          test -f backend.pid && kill "$(cat backend.pid)" || true

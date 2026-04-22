@@ -1,0 +1,71 @@
+{
+  "server": {
+    "host": "0.0.0.0",
+    "port": 8080,
+    "managementPort": 9090,
+    "redisUri": "",
+    "rateLimit": {
+      "enabled": true,
+      "capacity": 1000,
+      "refillPerSecond": 500
+    }
+  },
+  "security": {
+    "inboundTls": {
+      "enabled": false,
+      "certificateChainPath": "",
+      "privateKeyPath": "",
+      "trustCertificatePath": "",
+      "requireClientAuth": false
+    },
+    "backendTls": {
+      "enabled": false,
+      "certificateChainPath": "",
+      "privateKeyPath": "",
+      "trustCertificatePath": "",
+      "requireClientAuth": false
+    }
+  },
+  "waf": {
+    "enabled": true,
+    "patterns": [
+      "' or 1=1",
+      "union select",
+      "<script",
+      "../",
+      "javascript:"
+    ]
+  },
+  "health": {
+    "intervalSeconds": 5,
+    "failureThreshold": 3,
+    "timeoutMillis": 500
+  },
+  "audit": {
+    "enabled": true,
+    "sink": "file",
+    "filePath": "logs/netsentinel-audit.log"
+  },
+  "routes": [
+    {
+      "id": "default",
+      "host": "*",
+      "headers": {},
+      "policy": "WEIGHTED_ROUND_ROBIN",
+      "backends": [
+        {
+          "id": "local-api-a",
+          "uri": "http://127.0.0.1:9001",
+          "weight": 100,
+          "healthPath": "/health"
+        },
+        {
+          "id": "local-api-b",
+          "uri": "http://127.0.0.1:9002",
+          "weight": 50,
+          "healthPath": "/health"
+        }
+      ]
+    }
+  ]
+}
