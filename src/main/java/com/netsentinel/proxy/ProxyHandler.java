@@ -54,6 +54,16 @@ public final class ProxyHandler extends ChannelInboundHandlerAdapter {
     private final Class<? extends Channel> outboundChannelClass;
     private final Optional<SslContext> configuredBackendSslContext;
     private final EventPublisher eventPublisher;
+    private final com.netsentinel.metrics.NetSentinelMetrics metrics;
+    
+    private static final io.netty.util.concurrent.FastThreadLocal<java.util.Map<String, java.util.Queue<Channel>>> CHANNEL_POOLS = 
+        new io.netty.util.concurrent.FastThreadLocal<>() {
+            @Override
+            protected java.util.Map<String, java.util.Queue<Channel>> initialValue() {
+                return new java.util.HashMap<>();
+            }
+        };
+
     private SslContext defaultBackendSslContext;
     private ProxySession session;
 
@@ -61,12 +71,14 @@ public final class ProxyHandler extends ChannelInboundHandlerAdapter {
             RoutingEngine routingEngine,
             Class<? extends Channel> outboundChannelClass,
             Optional<SslContext> configuredBackendSslContext,
-            EventPublisher eventPublisher
+            EventPublisher eventPublisher,
+            com.netsentinel.metrics.NetSentinelMetrics metrics
     ) {
         this.routingEngine = routingEngine;
         this.outboundChannelClass = outboundChannelClass;
         this.configuredBackendSslContext = configuredBackendSslContext;
         this.eventPublisher = eventPublisher;
+        this.metrics = metrics;
     }
 
     @Override
@@ -110,7 +122,7 @@ public final class ProxyHandler extends ChannelInboundHandlerAdapter {
         if (selected.isEmpty()) {
             logger.warn("No healthy backend available for request: {} {}", request.method(), request.uri());
             ReferenceCountUtil.release(request);
-            LocalResponses.sendJson(context, HttpResponseStatus.SERVICE_UNAVAILABLE, "no healthy backend available");
+            sendFallback(context);
             return;
         }
 
@@ -124,6 +136,7 @@ public final class ProxyHandler extends ChannelInboundHandlerAdapter {
                 backend,
                 request.method(),
                 request.uri(),
+                request.headers(), // Store headers for retry
                 HttpUtil.isKeepAlive(request),
                 System.nanoTime()
         );
@@ -157,6 +170,30 @@ public final class ProxyHandler extends ChannelInboundHandlerAdapter {
 
     private void connectBackend(ChannelHandlerContext context, ProxySession proxySession) {
         BackendServer backend = proxySession.backend;
+        
+        Queue<Channel> pool = CHANNEL_POOLS.get().computeIfAbsent(backend.id(), k -> new ArrayDeque<>());
+        Channel pooledChannel;
+        while ((pooledChannel = pool.poll()) != null) {
+            if (pooledChannel.isActive()) {
+                break;
+            }
+        }
+
+        if (pooledChannel != null) {
+            logger.debug("Reusing pooled connection to backend {}", backend.id());
+            try {
+                pooledChannel.pipeline().remove(BackendResponseHandler.class);
+            } catch (Exception ignored) {
+            }
+            pooledChannel.pipeline().addLast(new BackendResponseHandler(context, ProxyHandler.this, proxySession));
+            proxySession.outbound = pooledChannel;
+            flushPending(context, proxySession);
+            if (proxySession.outbound.isWritable()) {
+                context.channel().config().setAutoRead(true);
+            }
+            return;
+        }
+
         Bootstrap bootstrap = new Bootstrap()
                 .group(context.channel().eventLoop())
                 .channel(outboundChannelClass)
@@ -284,10 +321,24 @@ public final class ProxyHandler extends ChannelInboundHandlerAdapter {
         return defaultBackendSslContext;
     }
 
+    private void sendFallback(ChannelHandlerContext context) {
+        LocalResponses.sendJson(
+                context,
+                HttpResponseStatus.SERVICE_UNAVAILABLE,
+                "{\"status\":\"error\",\"message\":\"All backends are currently unavailable or circuit is open\",\"code\":503}"
+        );
+    }
+
     private void failSession(ChannelHandlerContext context, ProxySession proxySession, Throwable cause, boolean writeResponse) {
         if (proxySession.completed) {
             return;
         }
+        
+        if (shouldRetry(proxySession, cause)) {
+            attemptRetry(context, proxySession);
+            return;
+        }
+
         proxySession.completed = true;
         while (!proxySession.pendingWrites.isEmpty()) {
             ReferenceCountUtil.release(proxySession.pendingWrites.remove());
@@ -325,6 +376,53 @@ public final class ProxyHandler extends ChannelInboundHandlerAdapter {
         }
     }
 
+    private boolean shouldRetry(ProxySession session, Throwable cause) {
+        if (session.completed || session.retryCount >= 2) {
+            return false;
+        }
+        // Only retry idempotent methods
+        HttpMethod method = session.method;
+        if (!method.equals(HttpMethod.GET) && !method.equals(HttpMethod.HEAD) && !method.equals(HttpMethod.OPTIONS)) {
+            return false;
+        }
+        return true;
+    }
+
+    private void attemptRetry(ChannelHandlerContext context, ProxySession session) {
+        session.retryCount++;
+        metrics.recordRetry(session.routeId);
+        logger.info("Retrying request {} {} (attempt {})", session.method, session.uri, session.retryCount);
+        
+        if (session.outbound != null) {
+            session.outbound.close();
+            session.outbound = null;
+        }
+        
+        Optional<BackendSelection> next = routingEngine.select(session.headers);
+        if (next.isPresent()) {
+            session.backend.recordFailure(0); // Record failure for previous backend
+            session.backend = next.get().backend();
+        }
+        
+        // Re-create request for the new backend
+        try {
+            // We need a dummy HttpRequest to reuse copyRequestForBackend
+            HttpRequest dummy = new io.netty.handler.codec.http.DefaultHttpRequest(
+                    io.netty.handler.codec.http.HttpVersion.HTTP_1_1,
+                    session.method,
+                    session.uri
+            );
+            dummy.headers().set(session.headers);
+            session.pendingWrites.add(copyRequestForBackend(context, dummy, session.backend));
+        } catch (Exception e) {
+            logger.error("Failed to recreate request for retry: {}", e.getMessage());
+            failSession(context, session, e, true);
+            return;
+        }
+        
+        connectBackend(context, session);
+    }
+
     private void publish(ProxySession proxySession, int statusCode, boolean success) {
         eventPublisher.publish(new TrafficEvent(
                 Instant.now(),
@@ -340,21 +438,25 @@ public final class ProxyHandler extends ChannelInboundHandlerAdapter {
 
     private static final class ProxySession {
         private final String routeId;
-        private final BackendServer backend;
+        private BackendServer backend;
         private final HttpMethod method;
         private final String uri;
+        private final HttpHeaders headers;
         private final boolean keepAlive;
         private final long startedNanos;
         private final Queue<Object> pendingWrites = new ArrayDeque<>();
         private Channel outbound;
         private int statusCode = HttpResponseStatus.BAD_GATEWAY.code();
+        private boolean backendKeepAlive = true;
         private boolean completed;
+        private int retryCount;
 
-        private ProxySession(String routeId, BackendServer backend, HttpMethod method, String uri, boolean keepAlive, long startedNanos) {
+        private ProxySession(String routeId, BackendServer backend, HttpMethod method, String uri, HttpHeaders headers, boolean keepAlive, long startedNanos) {
             this.routeId = routeId;
             this.backend = backend;
             this.method = method;
             this.uri = uri;
+            this.headers = headers;
             this.keepAlive = keepAlive;
             this.startedNanos = startedNanos;
         }
@@ -380,6 +482,7 @@ public final class ProxyHandler extends ChannelInboundHandlerAdapter {
             }
             if (message instanceof HttpResponse response) {
                 session.statusCode = response.status().code();
+                session.backendKeepAlive = HttpUtil.isKeepAlive(response);
                 HttpUtil.setKeepAlive(response, session.keepAlive);
                 response.headers().set("X-NetSentinel-Route", session.routeId);
             }
@@ -388,8 +491,17 @@ public final class ProxyHandler extends ChannelInboundHandlerAdapter {
             ChannelFuture write = clientContext.writeAndFlush(message);
             if (last) {
                 write.addListener((ChannelFutureListener) future -> {
+                    if (session.statusCode >= 500 && owner.shouldRetry(session, null)) {
+                        owner.attemptRetry(clientContext, session);
+                        return;
+                    }
                     owner.completeSession(session, session.statusCode);
-                    backendContext.close();
+                    if (session.backendKeepAlive && session.statusCode < 500 && backendContext.channel().isActive()) {
+                        CHANNEL_POOLS.get().computeIfAbsent(session.backend.id(), k -> new ArrayDeque<>()).offer(backendContext.channel());
+                    } else {
+                        backendContext.close();
+                    }
+                    
                     if (!session.keepAlive) {
                         clientContext.close();
                     } else {

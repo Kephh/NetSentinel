@@ -3,8 +3,12 @@ package com.netsentinel.resilience;
 import java.time.Duration;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 public final class CircuitBreaker {
+    public interface StateChangeListener {
+        void onStateChange(CircuitState newState);
+    }
     private static final int WINDOW_SIZE = 128;
     private static final int MINIMUM_SAMPLES = 20;
 
@@ -18,11 +22,16 @@ public final class CircuitBreaker {
     private int cursor;
     private int count;
     private long openedAtNanos;
+    private StateChangeListener listener;
 
     public CircuitBreaker(double failureThreshold, Duration p99LatencyThreshold, Duration openCooldown) {
         this.failureThreshold = failureThreshold;
         this.p99LatencyThresholdNanos = p99LatencyThreshold.toNanos();
         this.openCooldownNanos = openCooldown.toNanos();
+    }
+
+    public void setStateChangeListener(StateChangeListener listener) {
+        this.listener = listener;
     }
 
     public boolean allowRequest() {
@@ -44,6 +53,7 @@ public final class CircuitBreaker {
         record(false, latencyNanos);
         if (state.get() == CircuitState.HALF_OPEN) {
             state.set(CircuitState.CLOSED);
+            notifyListener(CircuitState.CLOSED);
         }
     }
 
@@ -95,6 +105,14 @@ public final class CircuitBreaker {
 
     private void trip() {
         openedAtNanos = System.nanoTime();
-        state.set(CircuitState.OPEN);
+        if (state.getAndSet(CircuitState.OPEN) != CircuitState.OPEN) {
+            notifyListener(CircuitState.OPEN);
+        }
+    }
+
+    private void notifyListener(CircuitState newState) {
+        if (listener != null) {
+            listener.onStateChange(newState);
+        }
     }
 }

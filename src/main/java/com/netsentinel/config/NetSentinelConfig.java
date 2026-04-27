@@ -53,14 +53,25 @@ public record NetSentinelConfig(
         }
     }
 
-    public record RateLimitConfig(boolean enabled, long capacity, long refillPerSecond) {
+    public enum RateLimitAlgorithm {
+        TOKEN_BUCKET,
+        SLIDING_WINDOW
+    }
+
+    public record RateLimitConfig(
+            boolean enabled,
+            RateLimitAlgorithm algorithm,
+            long capacity,
+            long refillPerSecond
+    ) {
         public RateLimitConfig {
+            algorithm = algorithm == null ? RateLimitAlgorithm.TOKEN_BUCKET : algorithm;
             capacity = capacity <= 0 ? 1000 : capacity;
             refillPerSecond = refillPerSecond <= 0 ? 500 : refillPerSecond;
         }
 
         public static RateLimitConfig defaults() {
-            return new RateLimitConfig(true, 1000, 500);
+            return new RateLimitConfig(true, RateLimitAlgorithm.TOKEN_BUCKET, 1000, 500);
         }
     }
 

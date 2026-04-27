@@ -15,6 +15,7 @@ import com.netsentinel.ratelimit.LocalTokenBucketRateLimiter;
 import com.netsentinel.ratelimit.NoopRateLimiter;
 import com.netsentinel.ratelimit.RateLimitHandler;
 import com.netsentinel.ratelimit.RateLimiter;
+import com.netsentinel.ratelimit.RedisSlidingWindowRateLimiter;
 import com.netsentinel.ratelimit.RedisTokenBucketRateLimiter;
 import com.netsentinel.ratelimit.ResilientRateLimiter;
 import com.netsentinel.routing.RoutingEngine;
@@ -60,11 +61,11 @@ public final class NetSentinelServer {
         Path configPath = args.length > 0 ? Path.of(args[0]) : Path.of("config", "netsentinel.json");
         NetSentinelConfig config = ConfigLoader.load(configPath);
 
-        RoutingEngine routingEngine = new RoutingEngine();
-        routingEngine.load(config);
-
         NetSentinelMetrics metrics = new NetSentinelMetrics();
         metrics.start(config.server().managementPort());
+
+        RoutingEngine routingEngine = new RoutingEngine();
+        routingEngine.load(config, metrics);
 
         RateLimiter rateLimiter = createRateLimiter(config.server().rateLimit(), config.server().redisUri());
         EventPublisher eventPublisher = createEventPublisher(config.audit());
@@ -111,9 +112,9 @@ public final class NetSentinelServer {
                         channel.pipeline().addLast(new AccessLogHandler());
                         channel.pipeline().addLast(new BackpressureHandler());
                         channel.pipeline().addLast(new RateLimitHandler(rateLimiter));
-                        channel.pipeline().addLast(new WafHandler(config.waf().enabled(), config.waf().patterns()));
+                        channel.pipeline().addLast(new WafHandler(config.waf().enabled(), config.waf().patterns(), metrics));
                         channel.pipeline().addLast(new MetricsHandler(metrics));
-                        channel.pipeline().addLast(new ProxyHandler(routingEngine, outboundChannel, backendSslContext, eventPublisher));
+                        channel.pipeline().addLast(new ProxyHandler(routingEngine, outboundChannel, backendSslContext, eventPublisher, metrics));
                     }
                 });
 
@@ -133,7 +134,12 @@ public final class NetSentinelServer {
             return new NoopRateLimiter();
         }
         if (redisUri != null && !redisUri.isBlank()) {
-            RateLimiter redis = new RedisTokenBucketRateLimiter(redisUri, config.capacity(), config.refillPerSecond());
+            RateLimiter redis;
+            if (config.algorithm() == NetSentinelConfig.RateLimitAlgorithm.SLIDING_WINDOW) {
+                redis = new RedisSlidingWindowRateLimiter(redisUri, config.capacity(), 1); // 1 second window for refillPerSecond semantics
+            } else {
+                redis = new RedisTokenBucketRateLimiter(redisUri, config.capacity(), config.refillPerSecond());
+            }
             RateLimiter local = new LocalTokenBucketRateLimiter(config.capacity(), config.refillPerSecond());
             return new ResilientRateLimiter(redis, local, Duration.ofSeconds(30));
         }

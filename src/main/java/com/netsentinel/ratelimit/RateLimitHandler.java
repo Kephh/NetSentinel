@@ -55,13 +55,31 @@ public final class RateLimitHandler extends ChannelInboundHandlerAdapter {
     }
 
     private static String clientKey(ChannelHandlerContext context, HttpRequest request) {
+        String apiKey = request.headers().get("X-API-Key");
+        if (apiKey != null && !apiKey.isBlank()) {
+            return "api-key:" + apiKey.trim();
+        }
+        
+        String auth = request.headers().get("Authorization");
+        if (auth != null && auth.startsWith("Bearer ")) {
+            String token = auth.substring(7).trim();
+            int firstDot = token.indexOf('.');
+            int secondDot = token.lastIndexOf('.');
+            if (firstDot > 0 && secondDot > firstDot) {
+                // Use JWT signature as unique tenant identifier for rate limiting
+                return "jwt:" + token.substring(secondDot + 1);
+            }
+            return "token:" + token;
+        }
+
         String forwardedFor = request.headers().get("X-Forwarded-For");
         if (forwardedFor != null && !forwardedFor.isBlank()) {
             int comma = forwardedFor.indexOf(',');
-            return comma > -1 ? forwardedFor.substring(0, comma).trim() : forwardedFor.trim();
+            return comma > -1 ? "ip:" + forwardedFor.substring(0, comma).trim() : "ip:" + forwardedFor.trim();
         }
+        
         if (context.channel().remoteAddress() instanceof InetSocketAddress socketAddress) {
-            return socketAddress.getAddress().getHostAddress();
+            return "ip:" + socketAddress.getAddress().getHostAddress();
         }
         return "anonymous";
     }

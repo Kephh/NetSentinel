@@ -17,11 +17,13 @@ import java.util.Optional;
 public final class WafHandler extends ChannelInboundHandlerAdapter {
     private final boolean enabled;
     private final AhoCorasickMatcher matcher;
+    private final com.netsentinel.metrics.NetSentinelMetrics metrics;
     private boolean blocked;
 
-    public WafHandler(boolean enabled, List<String> patterns) {
+    public WafHandler(boolean enabled, List<String> patterns, com.netsentinel.metrics.NetSentinelMetrics metrics) {
         this.enabled = enabled;
         this.matcher = new AhoCorasickMatcher(patterns);
+        this.metrics = metrics;
     }
 
     @Override
@@ -41,8 +43,12 @@ public final class WafHandler extends ChannelInboundHandlerAdapter {
 
         if (match.isPresent()) {
             blocked = true;
+            String pattern = match.get();
+            String route = context.channel().attr(com.netsentinel.metrics.MetricsHandler.ROUTE_ID).get();
+            metrics.recordWafBlock(route, pattern);
+            
             ReferenceCountUtil.release(message);
-            LocalResponses.sendJson(context, HttpResponseStatus.FORBIDDEN, "WAF blocked request pattern: " + match.get());
+            LocalResponses.sendJson(context, HttpResponseStatus.FORBIDDEN, "WAF blocked request pattern: " + pattern);
             return;
         }
 

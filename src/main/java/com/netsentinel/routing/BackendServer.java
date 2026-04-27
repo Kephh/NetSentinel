@@ -23,12 +23,24 @@ public final class BackendServer {
     private final AtomicInteger inFlight = new AtomicInteger();
     private volatile long warmupStartedNanos = System.nanoTime();
 
-    public BackendServer(String id, URI uri, int configuredWeight, String healthPath, CircuitBreaker circuitBreaker) {
+    public BackendServer(String id, URI uri, int configuredWeight, String healthPath, CircuitBreaker circuitBreaker,
+            com.netsentinel.metrics.NetSentinelMetrics metrics) {
         this.id = Objects.requireNonNull(id, "id");
         this.uri = Objects.requireNonNull(uri, "uri");
         this.configuredWeight = Math.max(1, configuredWeight);
         this.healthPath = healthPath == null || healthPath.isBlank() ? "/health" : healthPath;
         this.circuitBreaker = Objects.requireNonNull(circuitBreaker, "circuitBreaker");
+
+        if (metrics != null) {
+            this.circuitBreaker.setStateChangeListener(newState -> {
+                int code = switch (newState) {
+                    case CLOSED -> 0;
+                    case HALF_OPEN -> 1;
+                    case OPEN -> 2;
+                };
+                metrics.recordCircuitState(id, code);
+            });
+        }
     }
 
     public String id() {
