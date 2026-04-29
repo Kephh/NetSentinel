@@ -5,6 +5,7 @@ import com.netsentinel.config.NetSentinelConfig;
 import com.netsentinel.events.AsyncJsonFileEventPublisher;
 import com.netsentinel.events.AsyncJsonLogEventPublisher;
 import com.netsentinel.events.EventPublisher;
+import com.netsentinel.events.KafkaJsonEventPublisher;
 import com.netsentinel.health.HealthCheckService;
 import com.netsentinel.metrics.MetricsHandler;
 import com.netsentinel.metrics.NetSentinelMetrics;
@@ -134,14 +135,18 @@ public final class NetSentinelServer {
             return new NoopRateLimiter();
         }
         if (redisUri != null && !redisUri.isBlank()) {
-            RateLimiter redis;
-            if (config.algorithm() == NetSentinelConfig.RateLimitAlgorithm.SLIDING_WINDOW) {
-                redis = new RedisSlidingWindowRateLimiter(redisUri, config.capacity(), 1); // 1 second window for refillPerSecond semantics
-            } else {
-                redis = new RedisTokenBucketRateLimiter(redisUri, config.capacity(), config.refillPerSecond());
+            try {
+                RateLimiter redis;
+                if (config.algorithm() == NetSentinelConfig.RateLimitAlgorithm.SLIDING_WINDOW) {
+                    redis = new RedisSlidingWindowRateLimiter(redisUri, config.capacity(), 1); // 1 second window for refillPerSecond semantics
+                } else {
+                    redis = new RedisTokenBucketRateLimiter(redisUri, config.capacity(), config.refillPerSecond());
+                }
+                RateLimiter local = new LocalTokenBucketRateLimiter(config.capacity(), config.refillPerSecond());
+                return new ResilientRateLimiter(redis, local, Duration.ofSeconds(30));
+            } catch (RuntimeException exception) {
+                logger.warn("Redis rate limiter unavailable at startup, using local token bucket fallback: {}", exception.getMessage());
             }
-            RateLimiter local = new LocalTokenBucketRateLimiter(config.capacity(), config.refillPerSecond());
-            return new ResilientRateLimiter(redis, local, Duration.ofSeconds(30));
         }
         return new LocalTokenBucketRateLimiter(config.capacity(), config.refillPerSecond());
     }
@@ -153,6 +158,9 @@ public final class NetSentinelServer {
         }
         if (config.fileSink()) {
             return new AsyncJsonFileEventPublisher(Path.of(config.filePath()));
+        }
+        if (config.kafkaSink()) {
+            return new KafkaJsonEventPublisher(config.kafkaBootstrapServers(), config.kafkaTopic());
         }
         return new AsyncJsonLogEventPublisher(System.out);
     }

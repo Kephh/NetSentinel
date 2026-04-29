@@ -26,4 +26,24 @@ class AhoCorasickMatcherTest {
         assertTrue(matcher.findIn(buffer).isPresent());
         assertEquals(readerIndex, buffer.readerIndex());
     }
+
+    @Test
+    void streamingStateMatchesAcrossChunks() {
+        AhoCorasickMatcher matcher = new AhoCorasickMatcher(List.of("union select"));
+        AhoCorasickMatcher.State state = matcher.newState();
+
+        for (byte value : "payload=uni".getBytes(StandardCharsets.UTF_8)) {
+            assertTrue(state.accept(value).isEmpty());
+        }
+
+        boolean matched = false;
+        for (byte value : "on select password".getBytes(StandardCharsets.UTF_8)) {
+            if (state.accept(value).isPresent()) {
+                matched = true;
+                break;
+            }
+        }
+
+        assertTrue(matched);
+    }
 }

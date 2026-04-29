@@ -128,18 +128,24 @@ public record NetSentinelConfig(
         }
     }
 
-    public record AuditConfig(boolean enabled, String sink, String filePath) {
+    public record AuditConfig(boolean enabled, String sink, String filePath, String kafkaBootstrapServers, String kafkaTopic) {
         public AuditConfig {
             sink = (sink == null || sink.isBlank()) ? "stdout" : sink.trim().toLowerCase();
             filePath = (filePath == null || filePath.isBlank()) ? "logs/netsentinel-audit.log" : filePath;
+            kafkaBootstrapServers = kafkaBootstrapServers == null ? "" : kafkaBootstrapServers.trim();
+            kafkaTopic = (kafkaTopic == null || kafkaTopic.isBlank()) ? "netsentinel-traffic" : kafkaTopic.trim();
         }
 
         public static AuditConfig defaults() {
-            return new AuditConfig(true, "stdout", "logs/netsentinel-audit.log");
+            return new AuditConfig(true, "stdout", "logs/netsentinel-audit.log", "", "netsentinel-traffic");
         }
 
         public boolean fileSink() {
             return "file".equals(sink);
+        }
+
+        public boolean kafkaSink() {
+            return "kafka".equals(sink);
         }
     }
 

@@ -32,6 +32,10 @@ public final class RoutingEngine {
     private final AtomicReference<List<RouteDefinition>> routes = new AtomicReference<>(List.of());
     private com.netsentinel.metrics.NetSentinelMetrics metrics;
 
+    public void load(NetSentinelConfig config) {
+        load(config, null);
+    }
+
     public void load(NetSentinelConfig config, com.netsentinel.metrics.NetSentinelMetrics metrics) {
         this.metrics = metrics;
         Map<String, BackendServer> existing = existingBackends();

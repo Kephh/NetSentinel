@@ -35,22 +35,18 @@ public final class AhoCorasickMatcher {
         if (buffer == null || !buffer.isReadable()) {
             return Optional.empty();
         }
-        Node cursor = root;
+        State state = newState();
         for (int i = buffer.readerIndex(); i < buffer.writerIndex(); i++) {
-            int next = normalize(buffer.getByte(i)) & 0xFF;
-            while (cursor != root && cursor.children[next] == null) {
-                cursor = cursor.failure;
-            }
-            if (cursor.children[next] != null) {
-                cursor = cursor.children[next];
-            } else {
-                cursor = root;
-            }
-            if (cursor.pattern != null) {
-                return Optional.of(cursor.pattern);
+            Optional<String> match = state.accept(buffer.getByte(i));
+            if (match.isPresent()) {
+                return match;
             }
         }
         return Optional.empty();
+    }
+
+    public State newState() {
+        return new State(root);
     }
 
     private Optional<String> findIn(byte[] buffer) {
@@ -123,6 +119,29 @@ public final class AhoCorasickMatcher {
 
     private static byte normalize(byte value) {
         return value >= 'A' && value <= 'Z' ? (byte) (value + 32) : value;
+    }
+
+    public static final class State {
+        private final Node root;
+        private Node cursor;
+
+        private State(Node root) {
+            this.root = root;
+            this.cursor = root;
+        }
+
+        public Optional<String> accept(byte value) {
+            int next = normalize(value) & 0xFF;
+            while (cursor != root && cursor.children[next] == null) {
+                cursor = cursor.failure;
+            }
+            if (cursor.children[next] != null) {
+                cursor = cursor.children[next];
+            } else {
+                cursor = root;
+            }
+            return cursor.pattern == null ? Optional.empty() : Optional.of(cursor.pattern);
+        }
     }
 
     private static final class Node {

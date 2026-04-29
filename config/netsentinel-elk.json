@@ -44,7 +44,9 @@
   "audit": {
     "enabled": true,
     "sink": "file",
-    "filePath": "/var/log/netsentinel/audit.log"
+    "filePath": "/var/log/netsentinel/audit.log",
+    "kafkaBootstrapServers": "",
+    "kafkaTopic": "netsentinel-traffic"
   },
   "routes": [
     {

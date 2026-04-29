@@ -8,6 +8,7 @@ import io.netty.handler.codec.http.HttpHeaderNames;
 import io.netty.handler.codec.http.HttpHeaders;
 import io.netty.handler.codec.http.HttpRequest;
 import io.netty.handler.codec.http.HttpResponseStatus;
+import io.netty.handler.codec.http.LastHttpContent;
 import io.netty.util.ReferenceCountUtil;
 
 import java.util.List;
@@ -18,6 +19,7 @@ public final class WafHandler extends ChannelInboundHandlerAdapter {
     private final boolean enabled;
     private final AhoCorasickMatcher matcher;
     private final com.netsentinel.metrics.NetSentinelMetrics metrics;
+    private AhoCorasickMatcher.State bodyState;
     private boolean blocked;
 
     public WafHandler(boolean enabled, List<String> patterns, com.netsentinel.metrics.NetSentinelMetrics metrics) {
@@ -35,10 +37,17 @@ public final class WafHandler extends ChannelInboundHandlerAdapter {
 
         Optional<String> match = Optional.empty();
         if (message instanceof HttpRequest request) {
+            bodyState = matcher.newState();
             match = inspectRequest(request);
         }
         if (match.isEmpty() && message instanceof HttpContent content) {
-            match = matcher.findIn(content.content());
+            if (bodyState == null) {
+                bodyState = matcher.newState();
+            }
+            match = inspectContent(content);
+            if (message instanceof LastHttpContent) {
+                bodyState = null;
+            }
         }
 
         if (match.isPresent()) {
@@ -72,5 +81,15 @@ public final class WafHandler extends ChannelInboundHandlerAdapter {
             }
         }
         return matcher.findIn(headers.get(HttpHeaderNames.COOKIE));
+    }
+
+    private Optional<String> inspectContent(HttpContent content) {
+        for (int i = content.content().readerIndex(); i < content.content().writerIndex(); i++) {
+            Optional<String> match = bodyState.accept(content.content().getByte(i));
+            if (match.isPresent()) {
+                return match;
+            }
+        }
+        return Optional.empty();
     }
 }

@@ -9,7 +9,7 @@ NetSentinel is a high-performance Layer-7 reverse proxy and cloud-native traffic
 - **Circuit Breaking**: Active latency and failure-rate monitoring preventing cascading system failures.
 - **Dual-Layer Observability**:
   - **Console Access Logs**: Real-time HTTP summaries and low-level socket hex dumps.
-  - **JSON Audit Telemetry**: Deep traffic analytics designed for sidecar extraction into ELK stacks.
+  - **JSON Audit Telemetry**: Deep traffic analytics designed for stdout, file/ELK sidecars, or Kafka topics.
 
 
 ## Run locally
@@ -44,12 +44,15 @@ Audit settings are controlled through the `audit` section in the `netsentinel.js
 "audit": {
 	"enabled": true,
 	"sink": "file",
-	"filePath": "logs/netsentinel-audit.log"
+	"filePath": "logs/netsentinel-audit.log",
+	"kafkaBootstrapServers": "",
+	"kafkaTopic": "netsentinel-traffic"
 }
 ```
 
 - `sink: file` writes structured, Newline-Delimited JSON (NDJSON) to `filePath`. This is the recommended mode for sidecar shipping.
 - `sink: stdout` publishes the JSON traffic events directly to container logs.
+- `sink: kafka` publishes the same JSON traffic events to `kafkaTopic` through `kafkaBootstrapServers`.
 - A ready-to-use file sink sample is available at `config/netsentinel-elk.json`.
 
 ## Example metrics

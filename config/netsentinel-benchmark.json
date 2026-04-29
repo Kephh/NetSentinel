@@ -38,7 +38,9 @@
   "audit": {
     "enabled": false,
     "sink": "stdout",
-    "filePath": "logs/netsentinel-audit.log"
+    "filePath": "logs/netsentinel-audit.log",
+    "kafkaBootstrapServers": "",
+    "kafkaTopic": "netsentinel-traffic"
   },
   "routes": [
     {
